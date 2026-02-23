@@ -36,7 +36,7 @@ def make_datasets(filename: str, smiles_column = 'SMILES'):
   #===========================================================================================
   #featurize
 
-  tokenizer=dc.feat.SmilesTokenizer(vocab_file="CafChem/data/vocab_305K.txt")
+  tokenizer=dc.feat.SmilesTokenizer(vocab_file="SMILES_VAE/data/vocab_305K.txt")
   featname="SMILES Tokenizer"
 
   fl = list(map(lambda x: tokenizer.encode(x),Xa))
@@ -62,7 +62,7 @@ def make_datasets(filename: str, smiles_column = 'SMILES'):
   #   fl2set.update(sublist)
   # temp_vocab_size = len(fl2set)
 
-  f = open("CafChem/data/vocab_305K.txt", "r")
+  f = open("SMILES_VAE/data/vocab_305K.txt", "r")
   lines = f.readlines()
   f.close()
   VOCAB_SIZE = len(lines)
@@ -152,7 +152,7 @@ def test_vocab(filename: str, smiles_column = 'SMILES'):
   #===========================================================================================
   #featurize
 
-  tokenizer=dc.feat.SmilesTokenizer(vocab_file="CafChem/data/vocab.txt")
+  tokenizer=dc.feat.SmilesTokenizer(vocab_file="SMILES_VAE/data/vocab.txt")
   featname="SMILES Tokenizer"
 
   fl = list(map(lambda x: tokenizer.encode(x),Xa))
@@ -179,7 +179,7 @@ def test_vocab(filename: str, smiles_column = 'SMILES'):
   new_vocab_size = len(fl2set)
   print("New vocabulary size: ",new_vocab_size)
 
-  f = open("CafChem/data/vocab_305K.txt", "r")
+  f = open("SMILES_VAE/data/vocab_305K.txt", "r")
   raw_lines = f.readlines()
   f.close()
   VOCAB_SIZE = len(raw_lines)
@@ -328,7 +328,7 @@ class VAE():
     
     return history
   
-  def test_vae(self, smiles_list: list, tokenizer, max_length: int, vocab_size: int, test_size: int = 20):
+  def test_vae(self, smiles_list: list, tokenizer, test_size: int = 20):
     '''
     '''
 
@@ -339,12 +339,12 @@ class VAE():
     print(f'the length of Xs is: {len(Xs_raw)}')
 
     Xs = list(map(lambda x: tokenizer.encode(x),Xs_raw))
-    Xs = list(map(lambda x: tokenizer.add_padding_tokens(x,max_length),Xs))
+    Xs = list(map(lambda x: tokenizer.add_padding_tokens(x,self.max_length),Xs))
 
     test_array = np.array(Xs)
 
     results = self.autoencoder.predict(test_array)
-    proba = np.empty((len(results),max_length,vocab_size))
+    proba = np.empty((len(results),self.max_length,self.vocab_size))
 
     new_mols_ids = []
     for mol in range(len(results)):
@@ -377,11 +377,12 @@ class VAE():
 
     return img
   
-  def generate(self, num_samples: int = 50):
+  def generate(self, tokenizer, num_samples: int = 50):
     '''
     Generates new SMILES strings by sampling from the latent space and decoding.
     Args:
         num_samples: number of new SMILES strings to generate
+        tokenizer: tokenizer used for encoding/decoding SMILES strings
     Returns:
         img: a grid image of the generated molecules
     '''
