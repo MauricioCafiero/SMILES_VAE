@@ -386,7 +386,7 @@ class VAE():
     Returns:
         img: a grid image of the generated molecules
     '''
-    z_gen = np.random.normal(size=(num_samples, self.emb_size))
+    z_gen = np.random.normal(size=(num_samples, self.latent_size))
 
     recons_embed = self.decoder.predict(z_gen)
     print(recons_embed.shape)
