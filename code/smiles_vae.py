@@ -8,7 +8,9 @@ from rdkit import Chem
 import matplotlib.pyplot as plt
 from rdkit.Chem import AllChem, Draw
 from sklearn.model_selection import train_test_split
-from deepchem.feat.smiles_tokenizer import SmilesTokenizer
+
+#from deepchem.feat.smiles_tokenizer import SmilesTokenizer
+from smiles_tokenizer import SMILESTokenizer
 
 def make_datasets(filename: str, smiles_column = 'SMILES'):
   '''
@@ -36,7 +38,7 @@ def make_datasets(filename: str, smiles_column = 'SMILES'):
   #===========================================================================================
   #featurize
 
-  tokenizer=dc.feat.SmilesTokenizer(vocab_file="SMILES_VAE/data/vocab_305K.txt")
+  tokenizer=SMILESTokenizer(vocab_file="SMILES_VAE/data/vocab_305K.txt")
   featname="SMILES Tokenizer"
 
   fl = list(map(lambda x: tokenizer.encode(x),Xa))
@@ -152,7 +154,7 @@ def test_vocab(filename: str, smiles_column = 'SMILES'):
   #===========================================================================================
   #featurize
 
-  tokenizer=dc.feat.SmilesTokenizer(vocab_file="SMILES_VAE/data/vocab.txt")
+  tokenizer=SMILESTokenizer(vocab_file="SMILES_VAE/data/vocab.txt")
   featname="SMILES Tokenizer"
 
   fl = list(map(lambda x: tokenizer.encode(x),Xa))
