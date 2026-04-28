@@ -282,7 +282,7 @@ class VAE():
     self.encoder = tf.keras.models.Model(encoder_input,[z_mean,z_log_var,z], name = "encoder")
 
     decoder_input = tf.keras.layers.Input(shape=(self.latent_size,), name = "decoder_input")
-    x = tf.keras.layers.Dense(np.prod(shape_before_flattening))(decoder_input)
+    x = tf.keras.layers.Dense(int(np.prod(shape_before_flattening)))(decoder_input)
     x = tf.keras.layers.Reshape(shape_before_flattening)(x)
     for _ in range(self.num_layers):
       x = tf.keras.layers.GRU(self.num_units,return_sequences=True)(x)
