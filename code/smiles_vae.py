@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import pandas as pd
-import deepchem as dc
+#import deepchem as dc
 import time
 import transformers
 from rdkit import Chem
@@ -193,13 +193,11 @@ def test_vocab(filename: str, smiles_column = 'SMILES'):
 
   novel_items = []
   for item in fl2set:
-    item = tokenizer.decode([item])
-    item = tokenizer.convert_tokens_to_string(item)
-    item = item.replace(" ","")
+    token = tokenizer.ids_to_tokens.get(int(item), tokenizer.unk_token)
 
-    if item not in lines:
-      print(f"{item} not in standard vocabulary")
-      novel_items.append(item)
+    if token not in lines:
+      print(f"{token} not in standard vocabulary")
+      novel_items.append(token)
 
   if(len(novel_items) > 0):
     print("This dataset is not compatible with the Foundation model vocabulary")
