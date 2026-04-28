@@ -18,7 +18,7 @@ class SMILESTokenizer:
     - Bracketed atoms like [C@H], [N+], [O-], etc.
     - Multi-character elements like Cl, Br
     - Ring closure numbers like %10, %11
-    - Special tokens like [CLS], [SEP], [MASK], [PAD]
+    - Special tokens like [CLS], [SEP], [MASK], [pad]
 
     Attributes:
         vocab: Dictionary mapping tokens to IDs
@@ -40,7 +40,7 @@ class SMILESTokenizer:
         """
         self.vocab = {}
         self.ids_to_tokens = {}
-        self.special_tokens = {"[PAD]", "[CLS]", "[SEP]", "[MASK]", "[UNK]"}
+        self.special_tokens = {"", "[CLS]", "[SEP]", "[MASK]"}
 
         # Read vocabulary file
         with open(vocab_file, "r", encoding="utf-8") as f:
@@ -53,17 +53,31 @@ class SMILESTokenizer:
                 self.ids_to_tokens[idx] = token
 
         # Set special token IDs (use defaults if not in vocab)
-        self.pad_token = "[PAD]"
+        self.pad_token = ""
         self.cls_token = "[CLS]"
         self.sep_token = "[SEP]"
         self.mask_token = "[MASK]"
-        self.unk_token = "[UNK]"
+
+        # Detect unk token name from vocab (support both [unused] and   <think>   )
+        self.unk_tokens = []
+        if "[unused]" in self.vocab:
+            self.unk_tokens.append("[unused]")
+        if "   <think>    " in self.vocab:
+            self.unk_tokens.append("   <think>    ")
+        # Default to   <think>    if neither found
+        if not self.unk_tokens:
+            self.unk_tokens = ["   <think>    "]
+
+        self.unk_token = self.unk_tokens[0]
+        self.special_tokens.update(self.unk_tokens)
 
         self.pad_token_id = self.vocab.get(self.pad_token, 0)
         self.cls_token_id = self.vocab.get(self.cls_token, 12)
         self.sep_token_id = self.vocab.get(self.sep_token, 13)
         self.mask_token_id = self.vocab.get(self.mask_token, 14)
         self.unk_token_id = self.vocab.get(self.unk_token, 0)
+        # Store all unknown token IDs for lookup
+        self.unk_token_ids = set(self.vocab.get(t, 0) for t in self.unk_tokens)
 
         # Compile SMILES tokenization regex patterns
         # Order matters: longer/more specific patterns first
@@ -161,7 +175,7 @@ class SMILESTokenizer:
             tokens = []
             for token_id in token_ids:
                 token = self.ids_to_tokens.get(int(token_id), self.unk_token)
-                if token not in {self.pad_token, self.unk_token}:
+                if token not in {self.pad_token} | set(self.unk_tokens):
                     tokens.append(token)
             return self.convert_tokens_to_string(tokens)
         else:
