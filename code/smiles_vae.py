@@ -173,6 +173,10 @@ def test_vocab(filename: str, smiles_column = 'SMILES'):
   string_length = smallest - 1
   max_length = biggest
 
+  # Calculate max raw SMILES string length for compatibility check
+  max_raw_length = max(len(s) for s in Xa)
+  print("Max raw SMILES length: ", max_raw_length)
+
   fl2 = list(map(lambda x: tokenizer.add_padding_tokens(x,max_length),fl))
 
   fl2set=set()
@@ -204,7 +208,7 @@ def test_vocab(filename: str, smiles_column = 'SMILES'):
   else:
     print("This dataset is compatible with the Foundation model vocabulary")
 
-  if max_length > 166:
+  if max_raw_length > 166:
     print("This dataset's context window is not compatible with the Foundation model.")
   else:
     print("This dataset's context window is compatible with the Foundation model")
