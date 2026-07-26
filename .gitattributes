@@ -1,0 +1,15 @@
+# Normalize text files to LF in the repo and check out as LF everywhere.
+# Prevents the OneDrive CRLF <-> LF churn that made data/ZN15_55K.csv show
+# a spurious whole-file diff (git's clean filter strips CR on add).
+*.py    text eol=lf
+*.ipynb text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.csv   text eol=lf
+*.json  text eol=lf
+
+# Binary artifacts — never normalize or diff.
+*.png   binary
+*.jpg   binary
+*.h5    binary
+*.weights.h5 binary
