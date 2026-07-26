@@ -237,13 +237,42 @@ class KL_Loss_Layer(tf.keras.layers.Layer):
     self.add_loss(kl_loss) # Add as an auxiliary loss to the model
     return z_mean
 
+class WordDropout(tf.keras.layers.Layer):
+  """Randomly replace input token IDs with [UNK] during training only.
+
+  Bowman et al. (2016) word dropout: by corrupting the decoder's input tokens
+  the model cannot simply copy the input to predict the next token, so it is
+  forced to use the latent `z` (injected as the GRU initial state). Special
+  tokens ([CLS]/[SEP]/[PAD]) are never dropped, so sentence structure and the
+  end token survive. A no-op at inference (`training=False`), so generation
+  and reconstruction-from-z run on clean inputs.
+  """
+  def __init__(self, keep_prob: float, unk_id: int, cls_id: int, sep_id: int,
+               pad_id: int, **kwargs):
+    super(WordDropout, self).__init__(**kwargs)
+    self.keep_prob = float(keep_prob)
+    self.unk_id = int(unk_id)
+    self.special_ids = (int(cls_id), int(sep_id), int(pad_id))
+
+  def call(self, ids, training=None):
+    if not training or self.keep_prob >= 1.0:
+      return ids
+    keep_rand = tf.cast(tf.random.uniform(tf.shape(ids)) < self.keep_prob, tf.bool)
+    is_special = tf.zeros_like(keep_rand)
+    for s in self.special_ids:
+      is_special = is_special | tf.equal(ids, s)
+    keep = keep_rand | is_special
+    return tf.where(keep, ids, tf.fill(tf.shape(ids), self.unk_id))
+
 class VAE():
   '''
   A variational autoencoder model for SMILES strings.
   '''
 
-  def __init__(self, emb_size: int = 256, latent_size: int = 256, num_layers: int = 2, num_units: int = 128, 
-                      scale_ll: float = 0.000001, max_length: int = 105, vocab_size: int = 74):
+  def __init__(self, emb_size: int = 256, latent_size: int = 256, num_layers: int = 2, num_units: int = 128,
+                      scale_ll: float = 0.000001, max_length: int = 105, vocab_size: int = 74,
+                      cls_id: int = 12, sep_id: int = 13, pad_id: int = 0, unk_id: int = 0,
+                      word_dropout_keep: float = 1.0):
     '''
     constructor for the VAE class.
     Args:
@@ -254,6 +283,10 @@ class VAE():
       scale_ll: scale factor for the KL loss
       max_length: maximum length of a SMILES string
       vocab_size: size of the vocabulary
+      cls_id/sep_id/pad_id/unk_id: special token IDs from the tokenizer
+        (used by the autoregressive decoder + word dropout)
+      word_dropout_keep: fraction of decoder input tokens kept during training
+        (1.0 = off; 0.8 = drop 20% to [UNK], forcing z usage; Bowman et al. 2016)
     '''
     self.emb_size = emb_size
     self.latent_size = latent_size
@@ -262,6 +295,11 @@ class VAE():
     self.scale_ll = scale_ll
     self.max_length = max_length
     self.vocab_size = vocab_size
+    self.cls_id = cls_id
+    self.sep_id = sep_id
+    self.pad_id = pad_id
+    self.unk_id = unk_id
+    self.word_dropout_keep = word_dropout_keep
 
   def make_vae(self):
     '''
@@ -285,21 +323,35 @@ class VAE():
 
     self.encoder = tf.keras.models.Model(encoder_input,[z_mean,z_log_var,z], name = "encoder")
 
-    decoder_input = tf.keras.layers.Input(shape=(self.latent_size,), name = "decoder_input")
-    x = tf.keras.layers.Dense(int(np.prod(shape_before_flattening)))(decoder_input)
-    x = tf.keras.layers.Reshape(shape_before_flattening)(x)
-    for _ in range(self.num_layers):
-      x = tf.keras.layers.GRU(self.num_units,return_sequences=True)(x)
-    decoder_output = tf.keras.layers.Dense(self.vocab_size,activation="softmax")(x)
+    # Autoregressive (teacher-forced) decoder: takes the latent z AND the input
+    # token sequence, predicts the next token at each step. z is injected as the
+    # GRU initial state; word dropout on the token input (training only) forces
+    # the decoder to rely on z instead of just copying the input.
+    z_input   = tf.keras.layers.Input(shape=(self.latent_size,), name = "decoder_input")
+    tok_input = tf.keras.layers.Input(shape=(self.max_length,), name = "dec_tokens")
+    tok_input = WordDropout(self.word_dropout_keep, self.unk_id,
+                            self.cls_id, self.sep_id, self.pad_id,
+                            name="word_dropout")(tok_input)
+    x = tf.keras.layers.Embedding(self.vocab_size, self.emb_size, name="dec_emb")(tok_input)
+    # one initial GRU state per layer, projected from z
+    z_states = [tf.keras.layers.Dense(self.num_units, activation="tanh",
+                                      name=f"z_init_{i}")(z_input)
+                for i in range(self.num_layers)]
+    for i in range(self.num_layers):
+      x = tf.keras.layers.GRU(self.num_units, return_sequences=True,
+                              name=f"dec_gru_{i}")(x, initial_state=z_states[i])
+    decoder_output = tf.keras.layers.Dense(self.vocab_size, activation="softmax")(x)
 
-    self.decoder = tf.keras.models.Model(decoder_input,decoder_output)
+    self.decoder = tf.keras.models.Model([z_input, tok_input], decoder_output, name="decoder")
 
-    outputs = self.decoder(z)
+    outputs = self.decoder([z, encoder_input])
 
-    # Instantiate KL_Loss_Layer and add it to the model's graph. This layer will automatically add the KL loss.
-    kl_loss_output = KL_Loss_Layer(scale_ll = self.scale_ll, name='kl_divergence_layer')([z_mean, z_log_var])
+    # Instantiate KL_Loss_Layer and add it to the model's graph. Stored on self
+    # so its scale_ll can be annealed by a callback during training.
+    self.kl_layer = KL_Loss_Layer(scale_ll=self.scale_ll, name='kl_divergence_layer')
+    kl_loss_output = self.kl_layer([z_mean, z_log_var])
 
-    self.autoencoder = tf.keras.models.Model(encoder_input, outputs)
+    self.autoencoder = tf.keras.models.Model(encoder_input, outputs, name="autoencoder")
 
   def compile_vae(self, X, y, epochs: int = 30, batch_size: int =128, optimizer: str = 'Adam'):
     '''
@@ -321,15 +373,18 @@ class VAE():
   
     self.autoencoder.compile(optimizer=optimizer, loss=tf.keras.losses.SparseCategoricalCrossentropy(), metrics=["accuracy"])
   
-  def train_vae(self):
+  def train_vae(self, callbacks=None):
     '''
     Trains the VAE model.
+    Args:
+      callbacks: optional list of keras callbacks (e.g. ModelCheckpoint).
     Returns:
       history: the training history
     '''
     # checkpoint_cb = tf.keras.callbacks.ModelCheckpoint(r"ConvAE/ConvAE.keras",monitor="val_accuracy",save_best_only=True)
-    history = self.autoencoder.fit(self.X, self.X, epochs=self.epochs, verbose=2, validation_split=0.1) #,callbacks=[checkpoint_cb])
-    
+    # Teacher forcing: input X (current tokens) -> predict y (next tokens).
+    history = self.autoencoder.fit(self.X, self.y, epochs=self.epochs, verbose=2, validation_split=0.1, callbacks=callbacks or []) #,callbacks=[checkpoint_cb])
+
     return history
   
   def test_vae(self, smiles_list: list, tokenizer, test_size: int = 20):
@@ -381,6 +436,48 @@ class VAE():
 
     return img
   
+  def autoregressive_decode(self, z_gen, tokenizer, temperature: float = 0.0):
+    '''
+    Generate SMILES from latent vectors with the autoregressive decoder:
+    start from [CLS], feed the growing token sequence back in, predict the
+    next token at each step, stop at [SEP] (or max_length).
+
+    Args:
+      z_gen: (batch, latent_size) latent vectors to decode from.
+      tokenizer: tokenizer (for CLS/SEP/PAD IDs and decoding).
+      temperature: 0.0 = greedy argmax (deterministic, prone to mode-collapse
+        repetition); >0 = Gumbel-max sampling from softmax(probs)^(1/T) —
+        higher = more diverse, lower = more conservative. ~0.7-1.0 typical.
+    Returns:
+      (smiles_list, ids) where ids is the (batch, max_length) token matrix.
+    '''
+    cls = tokenizer.cls_token_id
+    sep = tokenizer.sep_token_id
+    pad = tokenizer.pad_token_id
+    L = self.max_length
+    B = len(z_gen)
+    ids = np.full((B, L), pad, dtype=np.int32)
+    ids[:, 0] = cls
+    for t in range(L - 1):
+      probs = self.decoder.predict([z_gen, ids], verbose=0)[:, t, :]
+      if temperature > 0:
+        # Gumbel-max sampling from the re-tempered softmax distribution.
+        g = -np.log(-np.log(np.random.uniform(size=probs.shape) + 1e-12) + 1e-12)
+        ids[:, t + 1] = np.argmax(np.log(probs + 1e-12) / temperature + g, axis=-1)
+      else:
+        ids[:, t + 1] = np.argmax(probs, axis=-1)
+    # Truncate each row at the first SEP, then decode.
+    smiles = []
+    for row in ids:
+      seq = []
+      for tid in row[1:]:                 # drop leading [CLS]
+        if int(tid) == sep:
+          break
+        seq.append(int(tid))
+      sm = tokenizer.decode(seq).replace(" ", "").replace("[CLS]", "").replace("[SEP]", "").replace("[PAD]", "")
+      smiles.append(sm)
+    return smiles, ids
+
   def generate(self, tokenizer, num_samples: int = 50):
     '''
     Generates new SMILES strings by sampling from the latent space and decoding.
@@ -391,23 +488,7 @@ class VAE():
         img: a grid image of the generated molecules
     '''
     z_gen = np.random.normal(size=(num_samples, self.latent_size))
-
-    recons_embed = self.decoder.predict(z_gen)
-    print(recons_embed.shape)
-
-    proba = np.empty((len(recons_embed),self.max_length,self.vocab_size))
-
-    new_mols_ids = []
-    for mol in range(len(recons_embed)):
-      pred = []
-      for i in range(self.max_length):
-          proba[mol,i,:] = recons_embed[mol,i,:]
-          # append only the value from each tensor
-          pred.append(tf.argmax(proba[mol,i,:]).numpy())
-      new_mols_ids.append(pred)
-
-    new_mols = [tokenizer.decode(mol) for mol in new_mols_ids]
-    self.new_mols = [mol.replace(" ","").replace("[CLS]","").replace("[SEP]","").replace("[PAD]","") for mol in new_mols]
+    self.new_mols, _ = self.autoregressive_decode(z_gen, tokenizer)
 
     mols = []
     legends = []
@@ -415,13 +496,13 @@ class VAE():
     misses = 0
     for new_molecule in self.new_mols:
       mol_temp = Chem.MolFromSmiles(new_molecule)
-      if mol_temp != None:
+      if mol_temp != None and mol_temp.GetNumAtoms() > 1:
         mols.append(mol_temp)
         legends.append(new_molecule)
         hits += 1
       else:
         misses += 1
-    
+
     print(f'Hits: {hits}')
     print(f'Misses: {misses}')
     try:
