@@ -37,6 +37,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from rdkit import Chem  # noqa: E402
+from rdkit import RDLogger  # noqa: E402
+# Silence RDKit's per-molecule SMILES parse warnings. The generation step parses
+# hundreds of candidate SMILES; the valid/invalid COUNT is the signal we read,
+# and the per-molecule warnings (several lines each) flood thousands of lines
+# and bury the summary. Disable at process start so it covers smiles_vae too.
+RDLogger.DisableLog("rdApp.*")
 from smiles_tokenizer import SMILESTokenizer  # noqa: E402
 from smiles_vae import VAE  # noqa: E402
 

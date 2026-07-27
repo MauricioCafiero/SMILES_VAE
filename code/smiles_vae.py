@@ -4,6 +4,11 @@ import pandas as pd
 #import deepchem as dc
 import time
 from rdkit import Chem
+from rdkit import RDLogger
+# Silence RDKit's per-molecule SMILES parse warnings (generate/test_vae parse
+# many candidate SMILES; the valid/invalid count is the signal, the warnings
+# flood the output). Idempotent if run_train already disabled them.
+RDLogger.DisableLog("rdApp.*")
 import matplotlib.pyplot as plt
 from rdkit.Chem import AllChem, Draw
 from sklearn.model_selection import train_test_split
