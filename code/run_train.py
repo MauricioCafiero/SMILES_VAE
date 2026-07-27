@@ -232,6 +232,11 @@ def main():
     ap.add_argument("--temperature", type=float, default=0.0,
                     help="decode sampling temperature (0.0 = greedy argmax; "
                          "0.7-1.0 = diverse Gumbel-max sampling)")
+    ap.add_argument("--clipnorm", type=float, default=5.0,
+                    help="max global L2 norm of Adam gradients per step "
+                         "(exploding-gradient backstop; the z_log_var clamp "
+                         "is the primary KL-NaN guard). 1.0 over-clips deeper "
+                         "(layers>=2) models — raise to 5.0+ for them.")
     ap.add_argument("--load", type=str, default="",
                     help="path to a saved run dir to load weights from "
                          "(skips training; re-runs reconstruction + generation)")
@@ -243,14 +248,14 @@ def main():
 
     # Hyperparameters (defaults match the notebook's `new_VAE` cell).
     print(f"Config: emb={args.emb} latent={args.latent} units={args.units} "
-          f"layers={args.layers} scale_ll={args.scale_ll} "
+          f"layers={args.layers} scale_ll={args.scale_ll} clipnorm={args.clipnorm} "
           f"word_dropout_keep={args.word_dropout_keep} anneal_epochs={args.anneal_epochs}")
     vae = VAE(emb_size=args.emb, latent_size=args.latent, num_layers=args.layers,
               num_units=args.units, scale_ll=args.scale_ll,
               max_length=max_length - 1, vocab_size=vocab_size,
               cls_id=tokenizer.cls_token_id, sep_id=tokenizer.sep_token_id,
               pad_id=tokenizer.pad_token_id, unk_id=tokenizer.unk_token_id,
-              word_dropout_keep=args.word_dropout_keep)
+              word_dropout_keep=args.word_dropout_keep, clipnorm=args.clipnorm)
     vae.make_vae()
     vae.compile_vae(x, y, epochs=args.epochs)
 
@@ -297,6 +302,7 @@ def main():
                 "word_dropout_keep": args.word_dropout_keep,
                 "anneal_epochs": args.anneal_epochs,
                 "temperature": args.temperature,
+                "clipnorm": args.clipnorm,
                 "max_length": max_length - 1, "vocab_size": vocab_size,
                 "nrows": args.nrows, "epochs": args.epochs,
             }, f, indent=2)

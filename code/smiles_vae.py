@@ -283,7 +283,7 @@ class VAE():
   def __init__(self, emb_size: int = 256, latent_size: int = 256, num_layers: int = 2, num_units: int = 128,
                       scale_ll: float = 0.000001, max_length: int = 105, vocab_size: int = 74,
                       cls_id: int = 12, sep_id: int = 13, pad_id: int = 0, unk_id: int = 0,
-                      word_dropout_keep: float = 1.0):
+                      word_dropout_keep: float = 1.0, clipnorm: float = 5.0):
     '''
     constructor for the VAE class.
     Args:
@@ -298,6 +298,13 @@ class VAE():
         (used by the autoregressive decoder + word dropout)
       word_dropout_keep: fraction of decoder input tokens kept during training
         (1.0 = off; 0.8 = drop 20% to [UNK], forcing z usage; Bowman et al. 2016)
+      clipnorm: max global L2 norm of the Adam gradients per step (a backstop
+        against exploding gradients). The z_log_var clamp in Sampling/
+        KL_Loss_Layer is the primary KL-NaN guard; this only catches other
+        spikes. 1.0 over-clips deeper (layers>=2) models — their larger BPTT
+        gradients get chopped every step, starving the effective LR — so the
+        default is 5.0, which leaves the 1-layer model essentially untouched
+        (its norm rarely exceeds 5) while giving deeper stacks headroom.
     '''
     self.emb_size = emb_size
     self.latent_size = latent_size
@@ -311,6 +318,7 @@ class VAE():
     self.pad_id = pad_id
     self.unk_id = unk_id
     self.word_dropout_keep = word_dropout_keep
+    self.clipnorm = clipnorm
 
   def make_vae(self):
     '''
@@ -393,8 +401,12 @@ class VAE():
       # clipnorm backstops the KL gradient: as the KL weight anneals up, the
       # -0.5*(1 - exp(z_log_var)) gradient can spike and destabilize training.
       # (The z_log_var clamp in Sampling/KL_Loss_Layer is the primary guard;
-      # this catches any other exploding gradient.)
-      optimizer = tf.keras.optimizers.Adam(learning_rate = 0.001, clipnorm = 1.0)
+      # this catches any other exploding gradient.) The default 5.0 leaves the
+      # 1-layer model untouched (its norm rarely exceeds 5) while giving deeper
+      # (layers>=2) stacks headroom — 1.0 over-clipped them, starving the
+      # effective LR and stalling training (acc ~0.26 halfway through a run).
+      optimizer = tf.keras.optimizers.Adam(learning_rate = 0.001,
+                                           clipnorm = self.clipnorm)
 
     # Masked, length-normalized sparse categorical crossentropy: ignore PAD
     # positions and divide each molecule's loss by its own (non-PAD) token
