@@ -330,15 +330,25 @@ class VAE():
     self.encoder = tf.keras.models.Model(encoder_input,[z_mean,z_log_var,z], name = "encoder")
 
     # Autoregressive (teacher-forced) decoder: takes the latent z AND the input
-    # token sequence, predicts the next token at each step. z is injected as the
-    # GRU initial state; word dropout on the token input (training only) forces
-    # the decoder to rely on z instead of just copying the input.
+    # token sequence, predicts the next token at each step. z is injected BOTH
+    # as the GRU initial state AND concatenated to the token embedding at every
+    # timestep (below) — the per-timestep injection keeps z in view across the
+    # ~100-step decode so it isn't washed out, which is what let the decoder
+    # ignore z for non-majority classes. Word dropout on the token input
+    # (training only) further forces the decoder to rely on z, not just copy.
     z_input   = tf.keras.layers.Input(shape=(self.latent_size,), name = "decoder_input")
     tok_input = tf.keras.layers.Input(shape=(self.max_length,), name = "dec_tokens")
     tok_input = WordDropout(self.word_dropout_keep, self.unk_id,
                             self.cls_id, self.sep_id, self.pad_id,
                             name="word_dropout")(tok_input)
     x = tf.keras.layers.Embedding(self.vocab_size, self.emb_size, name="dec_emb")(tok_input)
+    # Per-timestep z injection: project z to the embedding width, tile it across
+    # the sequence, and concatenate it to the token embedding. (The initial_state
+    # injection below is kept too; together they make z strongly condition the
+    # decode at every position.)
+    z_proj  = tf.keras.layers.Dense(self.emb_size, name="z_proj")(z_input)             # (B, emb)
+    z_tiled = tf.keras.layers.RepeatVector(self.max_length, name="z_tile")(z_proj)     # (B, T, emb)
+    x = tf.keras.layers.Concatenate(axis=-1, name="z_concat")([x, z_tiled])            # (B, T, 2*emb)
     # one initial GRU state per layer, projected from z
     z_states = [tf.keras.layers.Dense(self.num_units, activation="tanh",
                                       name=f"z_init_{i}")(z_input)
@@ -380,8 +390,34 @@ class VAE():
       # (The z_log_var clamp in Sampling/KL_Loss_Layer is the primary guard;
       # this catches any other exploding gradient.)
       optimizer = tf.keras.optimizers.Adam(learning_rate = 0.001, clipnorm = 1.0)
-  
-    self.autoencoder.compile(optimizer=optimizer, loss=tf.keras.losses.SparseCategoricalCrossentropy(), metrics=["accuracy"])
+
+    # Masked, length-normalized sparse categorical crossentropy: ignore PAD
+    # positions and divide each molecule's loss by its own (non-PAD) token
+    # count, so every molecule contributes equally regardless of length.
+    # Without this, long molecules dominate the per-token CE (the token-mass
+    # imbalance that let lipids bias the decoder) and capacity is spent learning
+    # to emit PAD after [SEP]. The function is intentionally named `accuracy`/
+    # masked_* closures below; the metric is named "accuracy" so Keras logs it
+    # as accuracy/val_accuracy (matching run_train.py's history keys).
+    pad_id = self.pad_id
+    def masked_scc(y_true, y_pred):
+        y_true = tf.cast(y_true, tf.int32)
+        mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)          # (B, T)
+        vocab = tf.shape(y_pred)[-1]
+        y_oh = tf.one_hot(y_true, vocab, dtype=tf.float32)
+        ce = -tf.reduce_sum(y_oh * tf.math.log(y_pred + 1e-7), axis=-1)   # (B, T)
+        ce = ce * mask
+        valid = tf.reduce_sum(mask, axis=-1)                              # (B,)
+        per_sample = tf.reduce_sum(ce, axis=-1) / (valid + 1e-7)          # (B,)
+        return tf.reduce_mean(per_sample)
+    def accuracy(y_true, y_pred):  # masked token accuracy (PAD ignored), named for Keras logging
+        y_true = tf.cast(y_true, tf.int32)
+        mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
+        pred = tf.cast(tf.argmax(y_pred, axis=-1), tf.int32)
+        correct = tf.cast(tf.equal(pred, y_true), tf.float32) * mask
+        return tf.reduce_sum(correct) / (tf.reduce_sum(mask) + 1e-7)
+
+    self.autoencoder.compile(optimizer=optimizer, loss=masked_scc, metrics=[accuracy])
   
   def train_vae(self, callbacks=None):
     '''
