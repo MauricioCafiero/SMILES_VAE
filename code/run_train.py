@@ -153,7 +153,11 @@ class KLAnnealingCallback(tf.keras.callbacks.Callback):
         print(f"[anneal] epoch {epoch + 1}: scale_ll = {w:.5f}")
 
 REPO_ROOT = os.path.dirname(HERE)
-DATA_CSV = os.path.join(REPO_ROOT, "data", "ZN15_55K.csv")
+# Default dataset: the Murcko-scaffold-balanced, length-capped subset of the
+# 305k (built by code/build_scaffold_dataset.py). The old ZN15_55K.csv is
+# lipid/long-chain dominated, which collapsed the VAE to a fatty-chain prior;
+# the scaffold-balanced set fixes that. Override with --data to use another file.
+DEFAULT_DATA_CSV = os.path.join(REPO_ROOT, "data", "ZN305K_scaffold_balanced_50k.csv")
 VOCAB_FILE = os.path.join(REPO_ROOT, "data", "vocab_305K.txt")
 OUT_DIR = os.path.join(REPO_ROOT, "outputs")
 
@@ -167,9 +171,9 @@ def clean_salts(smiles: str) -> str:
     return smiles
 
 
-def build_dataset(nrows):
+def build_dataset(nrows, data_csv):
     """Tokenize the CSV and return (X, y, vocab_size, tokenizer, max_length, smiles_list)."""
-    df = pd.read_csv(DATA_CSV)
+    df = pd.read_csv(data_csv)
     if nrows and nrows > 0:
         df = df.sample(n=min(nrows, len(df)), random_state=42).reset_index(drop=True)
 
@@ -201,6 +205,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--nrows", type=int, default=3000,
                     help="rows to sample (0 = full dataset). default 3000")
+    ap.add_argument("--data", type=str, default=DEFAULT_DATA_CSV,
+                    help="one-column SMILES CSV to train on (default: the "
+                         "scaffold-balanced 305k subset)")
     ap.add_argument("--epochs", type=int, default=2)
     ap.add_argument("--generate", type=int, default=50,
                     help="number of novel molecules to generate")
@@ -226,7 +233,7 @@ def main():
 
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    x, y, vocab_size, tokenizer, max_length, smiles_list = build_dataset(args.nrows)
+    x, y, vocab_size, tokenizer, max_length, smiles_list = build_dataset(args.nrows, args.data)
 
     # Hyperparameters (defaults match the notebook's `new_VAE` cell).
     print(f"Config: emb={args.emb} latent={args.latent} units={args.units} "
