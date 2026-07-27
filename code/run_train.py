@@ -331,6 +331,39 @@ def main():
     print(f"Hits: {hits}")
     print(f"Losses: {test_size - hits}")
     print(f"Accuracy: {hits / test_size}")
+
+    # Diagnostic: is z actually informative about the *specific* input? Exact
+    # string match is too strict (0/20 doesn't distinguish "z uninformative"
+    # from "z informative but greedy decode gives a valid variant"). So also
+    # report per-reconstruction validity + Tanimoto fingerprint similarity to
+    # the input, and dump input->reconstruction pairs to a text file we can
+    # read without viewing the PNG image.
+    from rdkit.Chem import AllChem, DataStructs
+    def _fp(s):
+        m = Chem.MolFromSmiles(s)
+        return AllChem.GetMorganFingerprintAsBitVect(m, 2, nBits=2048) if m else None
+    sim_scores, recon_valid = [], 0
+    rows = []
+    for o, n in zip(raw, recon):
+        n_mol = Chem.MolFromSmiles(n)
+        n_valid = bool(n_mol is not None and n_mol.GetNumAtoms() > 1)
+        recon_valid += int(n_valid)
+        fp_o, fp_n = _fp(o), _fp(n) if n_mol else None
+        sim = DataStructs.TanimotoSimilarity(fp_o, fp_n) if (fp_o and fp_n) else 0.0
+        sim_scores.append(sim)
+        rows.append(f"{o}\t{n}\t{'valid' if n_valid else 'invalid'}\t{sim:.3f}")
+    mean_sim = sum(sim_scores) / len(sim_scores) if sim_scores else 0.0
+    print(f"Recon validity: {recon_valid}/{test_size}")
+    print(f"Mean Tanimoto(input, recon): {mean_sim:.3f}  "
+          f"(1.0 = identical fingerprint, 0.0 = no shared substructure)")
+    recon_txt = os.path.join(out_dir, "reconstruction_smiles.txt")
+    with open(recon_txt, "w") as f:
+        f.write("# input\treconstruction\tvalid\ttanimoto\n")
+        f.write(f"# mean_tanimoto={mean_sim:.3f} recon_valid={recon_valid}/{test_size}\n")
+        for r in rows:
+            f.write(r + "\n")
+    print(f"Saved reconstruction pairs -> {recon_txt}")
+
     mols, legends = [], []
     for o, n in zip(raw, recon):
         mols.append(Chem.MolFromSmiles(o))
