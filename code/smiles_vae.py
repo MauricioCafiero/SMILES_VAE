@@ -3,7 +3,6 @@ import numpy as np
 import pandas as pd
 #import deepchem as dc
 import time
-import transformers
 from rdkit import Chem
 import matplotlib.pyplot as plt
 from rdkit.Chem import AllChem, Draw
@@ -218,6 +217,10 @@ def test_vocab(filename: str, smiles_column = 'SMILES'):
 class Sampling(tf.keras.layers.Layer):
     def call(self,inputs):
         z_mean, z_log_var = inputs
+        # Clamp z_log_var so tf.exp can't overflow float32 (log_var > ~88 -> inf
+        # -> NaN loss). [-10, 10] caps the std at ~148, which is ample headroom
+        # while making the reparameterization overflow-proof.
+        z_log_var = tf.clip_by_value(z_log_var, -10.0, 10.0)
         batch = tf.shape(z_mean)[0]
         dim = tf.shape(z_mean)[1]
         epsilon = tf.random.normal(shape=(batch,dim))
@@ -232,6 +235,9 @@ class KL_Loss_Layer(tf.keras.layers.Layer):
 
   def call(self, inputs):
     z_mean, z_log_var = inputs
+    # Clamp z_log_var so tf.exp(z_log_var) can't overflow float32 -> NaN.
+    # Must match the clamp in Sampling so the reported KL matches the std used.
+    z_log_var = tf.clip_by_value(z_log_var, -10.0, 10.0)
     kl_divergence_per_sample = -0.5 * tf.reduce_sum(1 + z_log_var - tf.exp(z_log_var) - tf.square(z_mean), axis=-1)
     kl_loss = self.scale_ll * tf.reduce_mean(kl_divergence_per_sample)
     self.add_loss(kl_loss) # Add as an auxiliary loss to the model
@@ -369,7 +375,11 @@ class VAE():
     self.y = y
 
     if optimizer == 'Adam':
-      optimizer = tf.keras.optimizers.Adam(learning_rate = 0.001)
+      # clipnorm backstops the KL gradient: as the KL weight anneals up, the
+      # -0.5*(1 - exp(z_log_var)) gradient can spike and destabilize training.
+      # (The z_log_var clamp in Sampling/KL_Loss_Layer is the primary guard;
+      # this catches any other exploding gradient.)
+      optimizer = tf.keras.optimizers.Adam(learning_rate = 0.001, clipnorm = 1.0)
   
     self.autoencoder.compile(optimizer=optimizer, loss=tf.keras.losses.SparseCategoricalCrossentropy(), metrics=["accuracy"])
   
