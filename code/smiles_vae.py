@@ -232,18 +232,33 @@ class Sampling(tf.keras.layers.Layer):
         return z_mean + tf.exp(0.5*z_log_var)*epsilon
 
 class KL_Loss_Layer(tf.keras.layers.Layer):
+  '''Computes the (optionally free-bits-floored) KL divergence loss for the VAE.
+
+  free_bits > 0 applies a per-dimension KL floor (Free-Bits, Kingma et al. 2016):
+  kl_per_dim = max(kl_d, free_bits). Any dimension below the floor receives zero
+  gradient, so the encoder cannot drive its KL to zero — z is forced to retain at
+  least free_bits nats per dim and the decoder cannot ignore it. This is the
+  posterior-collapse fix for the LAYERS>=2 model (a powerful decoder otherwise
+  models the token marginal and ignores z entirely). free_bits=0.0 is the
+  standard VAE KL (floor disabled, fully backward-compatible).
   '''
-  '''
-  def __init__(self, scale_ll: float = 0.0, **kwargs):
+  def __init__(self, scale_ll: float = 0.0, free_bits: float = 0.0, **kwargs):
     super(KL_Loss_Layer, self).__init__(**kwargs)
     self.scale_ll = scale_ll
+    self.free_bits = free_bits
 
   def call(self, inputs):
     z_mean, z_log_var = inputs
     # Clamp z_log_var so tf.exp(z_log_var) can't overflow float32 -> NaN.
     # Must match the clamp in Sampling so the reported KL matches the std used.
     z_log_var = tf.clip_by_value(z_log_var, -10.0, 10.0)
-    kl_divergence_per_sample = -0.5 * tf.reduce_sum(1 + z_log_var - tf.exp(z_log_var) - tf.square(z_mean), axis=-1)
+    # Per-dimension KL: KL(N(mu,sigma) || N(0,1)) = -0.5*(1+log_var - mu^2 - sigma^2).
+    kl_per_dim = -0.5 * (1.0 + z_log_var - tf.exp(z_log_var) - tf.square(z_mean))
+    if self.free_bits > 0.0:
+      # Free-bits floor: no gradient pushes any dim's KL below the threshold,
+      # so z must keep >= free_bits nats per dim and can't be fully ignored.
+      kl_per_dim = tf.maximum(kl_per_dim, self.free_bits)
+    kl_divergence_per_sample = tf.reduce_sum(kl_per_dim, axis=-1)
     kl_loss = self.scale_ll * tf.reduce_mean(kl_divergence_per_sample)
     self.add_loss(kl_loss) # Add as an auxiliary loss to the model
     return z_mean
@@ -283,7 +298,8 @@ class VAE():
   def __init__(self, emb_size: int = 256, latent_size: int = 256, num_layers: int = 2, num_units: int = 128,
                       scale_ll: float = 0.000001, max_length: int = 105, vocab_size: int = 74,
                       cls_id: int = 12, sep_id: int = 13, pad_id: int = 0, unk_id: int = 0,
-                      word_dropout_keep: float = 1.0, clipnorm: float = 5.0):
+                      word_dropout_keep: float = 1.0, clipnorm: float = 5.0,
+                      free_bits: float = 0.0):
     '''
     constructor for the VAE class.
     Args:
@@ -305,6 +321,9 @@ class VAE():
         gradients get chopped every step, starving the effective LR — so the
         default is 5.0, which leaves the 1-layer model essentially untouched
         (its norm rarely exceeds 5) while giving deeper stacks headroom.
+      free_bits: per-dimension KL floor in nats (0.0 = off). Prevents posterior
+        collapse by blocking gradient on any latent dim whose KL is below the
+        floor, so the decoder can't ignore z. The fix for LAYERS>=2 collapse.
     '''
     self.emb_size = emb_size
     self.latent_size = latent_size
@@ -319,6 +338,7 @@ class VAE():
     self.unk_id = unk_id
     self.word_dropout_keep = word_dropout_keep
     self.clipnorm = clipnorm
+    self.free_bits = free_bits
 
   def make_vae(self):
     '''
@@ -376,8 +396,10 @@ class VAE():
     outputs = self.decoder([z, encoder_input])
 
     # Instantiate KL_Loss_Layer and add it to the model's graph. Stored on self
-    # so its scale_ll can be annealed by a callback during training.
-    self.kl_layer = KL_Loss_Layer(scale_ll=self.scale_ll, name='kl_divergence_layer')
+    # so its scale_ll can be annealed by a callback during training. free_bits is
+    # a training hparam (per-dim KL floor) and is not annealed.
+    self.kl_layer = KL_Loss_Layer(scale_ll=self.scale_ll, free_bits=self.free_bits,
+                                 name='kl_divergence_layer')
     kl_loss_output = self.kl_layer([z_mean, z_log_var])
 
     self.autoencoder = tf.keras.models.Model(encoder_input, outputs, name="autoencoder")

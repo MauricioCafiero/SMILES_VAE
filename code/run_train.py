@@ -232,6 +232,10 @@ def main():
     ap.add_argument("--temperature", type=float, default=0.0,
                     help="decode sampling temperature (0.0 = greedy argmax; "
                          "0.7-1.0 = diverse Gumbel-max sampling)")
+    ap.add_argument("--free_bits", type=float, default=0.0,
+                    help="per-dimension KL floor in nats (0=off). Blocks "
+                         "gradient on dims below the floor so the decoder can't "
+                         "ignore z -> posterior-collapse fix for LAYERS>=2.")
     ap.add_argument("--clipnorm", type=float, default=5.0,
                     help="max global L2 norm of Adam gradients per step "
                          "(exploding-gradient backstop; the z_log_var clamp "
@@ -249,13 +253,15 @@ def main():
     # Hyperparameters (defaults match the notebook's `new_VAE` cell).
     print(f"Config: emb={args.emb} latent={args.latent} units={args.units} "
           f"layers={args.layers} scale_ll={args.scale_ll} clipnorm={args.clipnorm} "
-          f"word_dropout_keep={args.word_dropout_keep} anneal_epochs={args.anneal_epochs}")
+          f"word_dropout_keep={args.word_dropout_keep} anneal_epochs={args.anneal_epochs} "
+          f"free_bits={args.free_bits}")
     vae = VAE(emb_size=args.emb, latent_size=args.latent, num_layers=args.layers,
               num_units=args.units, scale_ll=args.scale_ll,
               max_length=max_length - 1, vocab_size=vocab_size,
               cls_id=tokenizer.cls_token_id, sep_id=tokenizer.sep_token_id,
               pad_id=tokenizer.pad_token_id, unk_id=tokenizer.unk_token_id,
-              word_dropout_keep=args.word_dropout_keep, clipnorm=args.clipnorm)
+              word_dropout_keep=args.word_dropout_keep, clipnorm=args.clipnorm,
+              free_bits=args.free_bits)
     vae.make_vae()
     vae.compile_vae(x, y, epochs=args.epochs)
 
@@ -263,7 +269,7 @@ def main():
     # generated SMILES) so a trained model can be re-loaded with --load <dir>.
     cfg = (f"n{args.nrows}_e{args.epochs}_b32_emb{args.emb}_lat{args.latent}"
            f"_gru{args.units}_ll{args.scale_ll}_wd{args.word_dropout_keep}"
-           f"_ann{args.anneal_epochs}")
+           f"_ann{args.anneal_epochs}_fb{args.free_bits}")
     run_dir = os.path.join(OUT_DIR, f"run_{cfg}_{datetime.now():%Y%m%d_%H%M%S}")
     enc_w = os.path.join(run_dir, "encoder.weights.h5")
     dec_w = os.path.join(run_dir, "decoder.weights.h5")
@@ -303,6 +309,7 @@ def main():
                 "anneal_epochs": args.anneal_epochs,
                 "temperature": args.temperature,
                 "clipnorm": args.clipnorm,
+                "free_bits": args.free_bits,
                 "max_length": max_length - 1, "vocab_size": vocab_size,
                 "nrows": args.nrows, "epochs": args.epochs,
             }, f, indent=2)
